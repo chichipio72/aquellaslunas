@@ -1,8 +1,9 @@
 from fastapi import FastAPI, Query
-from skyfield.api import load, Topos
 from skyfield import almanac
 from datetime import datetime, timedelta
 import pytz
+from skyfield.api import load, wgs84
+
 
 # Crear una sola aplicación FastAPI
 app = FastAPI()
@@ -49,7 +50,7 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
     ts = load.timescale()
     planets = load('de421.bsp')
 
-    observador = planets['earth'] + Topos(latitude_degrees=lat, longitude_degrees=lon)
+    observador = planets['earth'] + wgs84.latlon(lat, lon)
 
     tz_fixed = pytz.FixedOffset(int(tz * 60))
     dia_local = fecha.replace(tzinfo=tz_fixed)
