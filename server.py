@@ -1,29 +1,27 @@
 from fastapi import FastAPI, Query
+from skyfield.api import load, wgs84
 from skyfield import almanac
 from datetime import datetime, timedelta
 import pytz
-from skyfield.api import load, wgs84
 
-
-# Crear una sola aplicación FastAPI
 app = FastAPI()
 
+ts = load.timescale()
 
-# ======================
-# ENDPOINT PRINCIPAL "/"
-# ======================
+# ============================================================
+# ENDPOINT PRINCIPAL
+# ============================================================
 @app.get("/")
 def root():
     return {"mensaje": "API de Aquellas Lunas funcionando!"}
 
 
-# ======================
+# ============================================================
 # ENDPOINT /ahora
-# ======================
+# ============================================================
 @app.get("/ahora")
 def ahora(tz: float = Query(0, description="Huso horario en horas. Ej: -3 para Argentina")):
 
-    ts = load.timescale()
     t = ts.now()
 
     utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
@@ -31,121 +29,123 @@ def ahora(tz: float = Query(0, description="Huso horario en horas. Ej: -3 para A
     try:
         user_tz = pytz.FixedOffset(int(tz * 60))
         local_time = utc_now.astimezone(user_tz)
-    except Exception as e:
-        return {"error": f"Huso horario inválido: {tz}", "detalle": str(e)}
+    except:
+        return {"error": "Huso horario inválido"}
 
     return {
         "fecha_juliana_TT": t.tt,
-        "utc": utc_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
-        "local_time": local_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "utc": utc_now.strftime("%Y-%m-%d %H:%M:%S"),
+        "local_time": local_time.strftime("%Y-%m-%d %H:%M:%S"),
         "tz": tz
     }
 
 
-# ======================
-# FUNCIÓN BASE DE CÁLCULO
-# ======================
+# ============================================================
+# FUNCIÓN BASE — CALCULAR DATOS
+# ============================================================
 def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
 
-    ts = load.timescale()
-    planets = load('de421.bsp')
+    # EPHEMERIDES — Usar Loader como tu script viejo
+    eph = load('de421.bsp')
 
-    # Posición geocéntrica válida para almanac
-    obs = wgs84.latlon(lat, lon).to_geocentric()
-    observador = planets['earth'] + obs
+    # Timezones
+    user_tz = pytz.FixedOffset(int(tz * 60))
+    fecha_local = fecha.replace(tzinfo=user_tz)
+    fecha_utc = fecha_local.astimezone(pytz.utc)
 
+    # Observador (ESTO FUNCIONA EN SKYFIELD 1.45)
+    observador = wgs84.latlon(lat, lon)
 
-    tz_fixed = pytz.FixedOffset(int(tz * 60))
-    dia_local = fecha.replace(tzinfo=tz_fixed)
-    dia_utc = dia_local.astimezone(pytz.utc)
+    # Rango de un día
+    t0 = ts.utc(fecha_utc)
+    t1 = ts.utc((fecha_local + timedelta(days=1)).astimezone(pytz.utc))
 
-    t0 = ts.from_datetime(dia_utc)
-    t1 = ts.from_datetime(dia_utc + timedelta(days=1))
-
-    # Sol — salida/puesta
-    f_sol = almanac.sunrise_sunset(planets, observador)
-    tiempos_sol, eventos_sol = almanac.find_discrete(t0, t1, f_sol)
+    # =========================
+    # SALIDA Y PUESTA DEL SOL
+    # =========================
+    sol_func = almanac.risings_and_settings(eph, eph['Sun'], observador)
+    t_sol, e_sol = almanac.find_discrete(t0, t1, sol_func)
 
     salida_sol = None
     puesta_sol = None
-    for t, evento in zip(tiempos_sol, eventos_sol):
-        dt_local = t.utc_datetime().replace(tzinfo=pytz.utc).astimezone(tz_fixed)
-        if evento == 1:
-            salida_sol = dt_local.strftime("%Y-%m-%d %H:%M")
-        else:
-            puesta_sol = dt_local.strftime("%Y-%m-%d %H:%M")
 
-    # Luna — salida/puesta
-    f_luna = almanac.risings_and_settings(planets, planets['moon'], observador)
-    tiempos_luna, eventos_luna = almanac.find_discrete(t0, t1, f_luna)
+    for t, event in zip(t_sol, e_sol):
+        dt = t.utc_datetime().replace(tzinfo=pytz.utc).astimezone(user_tz)
+        if event == 1 and salida_sol is None:
+            salida_sol = dt.strftime("%Y-%m-%d %H:%M")
+        elif event == 0 and puesta_sol is None:
+            puesta_sol = dt.strftime("%Y-%m-%d %H:%M")
+
+    # =========================
+    # SALIDA Y PUESTA DE LA LUNA
+    # =========================
+    luna_func = almanac.risings_and_settings(eph, eph['Moon'], observador)
+    t_luna, e_luna = almanac.find_discrete(t0, t1, luna_func)
 
     salida_luna = None
     puesta_luna = None
-    for t, evento in zip(tiempos_luna, eventos_luna):
-        dt_local = t.utc_datetime().replace(tzinfo=pytz.utc).astimezone(tz_fixed)
-        if evento == 1:
-            salida_luna = dt_local.strftime("%Y-%m-%d %H:%M")
-        else:
-            puesta_luna = dt_local.strftime("%Y-%m-%d %H:%M")
 
-    # Fase lunar, iluminación, distancias
-    t = ts.from_datetime(dia_utc)
-    e = planets
-    sol, luna = e['sun'], e['moon']
+    for t, event in zip(t_luna, e_luna):
+        dt = t.utc_datetime().replace(tzinfo=pytz.utc).astimezone(user_tz)
+        if event == 1 and salida_luna is None:
+            salida_luna = dt.strftime("%Y-%m-%d %H:%M")
+        elif event == 0 and puesta_luna is None:
+            puesta_luna = dt.strftime("%Y-%m-%d %H:%M")
 
-    dist_luna = observador.at(t).observe(luna).distance().km
-    dist_sol  = observador.at(t).observe(sol).distance().km
+    # =========================
+    # FASE LUNAR – ÁNGULO
+    # =========================
+    fase_angulo = almanac.moon_phase(eph, ts.utc(fecha_utc)).degrees
 
-    fase_func = almanac.moon_phase(e)
-    fase_rad = fase_func(t)
-    iluminacion = almanac.fraction_illuminated(e, 'moon', t)
-
-    # Edad lunar
-    f_moonphases = almanac.moon_phases(e)
-    t_prev, _ = almanac.find_discrete(t0 - timedelta(days=30), t0, f_moonphases)
-    if len(t_prev) > 0:
-        ultima_nueva = t_prev[-1].utc_datetime().replace(tzinfo=pytz.utc).astimezone(tz_fixed)
-        edad = (dia_local - ultima_nueva).total_seconds() / 86400
-    else:
-        edad = None
-
-    # Traducir fase
-    fase_deg = fase_rad.degrees
-    if fase_deg < 45:
+    if fase_angulo < 45:
         fase_nombre = "Luna nueva"
-    elif fase_deg < 90:
+    elif fase_angulo < 90:
         fase_nombre = "Creciente"
-    elif fase_deg < 135:
+    elif fase_angulo < 135:
         fase_nombre = "Cuarto creciente"
-    elif fase_deg < 180:
+    elif fase_angulo < 180:
         fase_nombre = "Gibosa creciente"
-    elif fase_deg < 225:
+    elif fase_angulo < 225:
         fase_nombre = "Luna llena"
-    elif fase_deg < 270:
+    elif fase_angulo < 270:
         fase_nombre = "Gibosa menguante"
-    elif fase_deg < 315:
+    elif fase_angulo < 315:
         fase_nombre = "Cuarto menguante"
     else:
         fase_nombre = "Menguante"
 
+    # =========================
+    # ILUMINACIÓN
+    # =========================
+    iluminacion = almanac.fraction_illuminated(eph, 'moon', ts.utc(fecha_utc))
+
+    # =========================
+    # DISTANCIAS
+    # =========================
+    obs_at = observador.at(ts.utc(fecha_utc))
+    dist_luna = obs_at.observe(eph['Moon']).distance().km
+    dist_sol = obs_at.observe(eph['Sun']).distance().km
+
     return {
-        "fecha": dia_local.strftime("%Y-%m-%d"),
-        "sol": {"salida": salida_sol, "puesta": puesta_sol},
+        "fecha": fecha_local.strftime("%Y-%m-%d"),
+        "sol": {
+            "salida": salida_sol,
+            "puesta": puesta_sol
+        },
         "luna": {
             "salida": salida_luna,
             "puesta": puesta_luna,
             "fase": fase_nombre,
-            "edad_dias": round(edad, 2) if edad else None,
             "iluminacion": round(float(iluminacion), 4),
-            "distancia_km": round(dist_luna, 2),
+            "distancia_km": round(dist_luna, 2)
         },
         "sol_distancia_km": round(dist_sol, 2)
     }
 
 
-# ======================
+# ============================================================
 # ENDPOINT /datos
-# ======================
+# ============================================================
 @app.get("/datos")
 def datos(lat: float, lon: float, tz: float, fecha: str = None):
 
