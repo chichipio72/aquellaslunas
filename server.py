@@ -135,4 +135,22 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
             "iluminacion": round(float(iluminacion), 4),
             "distancia_km": round(dist_luna, 2),
         },
-        "sol_distancia_km": round(
+        "sol_distancia_km": round(dist_sol, 2)
+    }
+
+
+# ======================
+# ENDPOINT /datos
+# ======================
+@app.get("/datos")
+def datos(lat: float, lon: float, tz: float, fecha: str = None):
+
+    if fecha:
+        try:
+            fecha_dt = datetime.strptime(fecha, "%Y-%m-%d")
+        except:
+            return {"error": "Formato de fecha inválido. Use YYYY-MM-DD"}
+    else:
+        fecha_dt = datetime.utcnow()
+
+    return calcular_datos(fecha_dt, lat, lon, tz)
