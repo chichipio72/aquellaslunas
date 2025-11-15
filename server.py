@@ -4,27 +4,21 @@ from skyfield import almanac
 from datetime import datetime, timedelta
 import pytz
 
-# ============================================================
-# INICIALIZACIÓN
-# ============================================================
-
 app = FastAPI()
+
+# Cargar efemérides una sola vez (rápido y estable en Render)
 ts = load.timescale()
+eph = load('de421.bsp')
 
 
-# ============================================================
-# ENDPOINT PRINCIPAL "/"
-# ============================================================
 @app.get("/")
 def root():
     return {"mensaje": "API de Aquellas Lunas funcionando!"}
 
 
-# ============================================================
-# ENDPOINT /ahora
-# ============================================================
 @app.get("/ahora")
-def ahora(tz: float = Query(0, description="Huso horario en horas. Ej: -3 para Argentina")):
+def ahora(tz: float = Query(0, description="Huso horario. Ej: -3 para Argentina")):
+
     t = ts.now()
     utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
 
@@ -32,76 +26,72 @@ def ahora(tz: float = Query(0, description="Huso horario en horas. Ej: -3 para A
         user_tz = pytz.FixedOffset(int(tz * 60))
         local_time = utc_now.astimezone(user_tz)
     except:
-        return {"error": "Huso horario inválido"}
+        return {"error": "TZ inválido"}
 
     return {
         "fecha_juliana_TT": t.tt,
-        "utc": utc_now.strftime("%Y-%m-%d %H:%M:%S"),
-        "local_time": local_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "utc": utc_now.strftime("%Y-%m-%d %H:%M:%S %Z"),
+        "local_time": local_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "tz": tz
     }
 
 
-# ============================================================
-# FUNCIÓN BASE — CALCULAR DATOS ASTRONÓMICOS
-# ============================================================
-
 def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
 
-    # EPHEMERIDES (igual que tu script viejo)
-    eph = load('de421.bsp')
-
-    # TZ local del usuario
-    user_tz = pytz.FixedOffset(int(tz * 60))
-
-    # Fechas local y UTC
-    fecha_local = fecha.replace(tzinfo=user_tz)
+    # Zona horaria local
+    tz_fixed = pytz.FixedOffset(int(tz * 60))
+    fecha_local = fecha.replace(tzinfo=tz_fixed)
     fecha_utc = fecha_local.astimezone(pytz.utc)
 
-    # Observador (forma compatible Skyfield 1.45)
+    # Observador - versión Skyfield 1.53 correcta
     observador = wgs84.latlon(lat, lon)
 
-    # Rango de un día
-    t0 = ts.utc(fecha_utc)
-    t1 = ts.utc((fecha_local + timedelta(days=1)).astimezone(pytz.utc))
+    # Intervalo del día
+    t0 = ts.from_datetime(fecha_utc)
+    t1 = ts.from_datetime(fecha_utc + timedelta(days=1))
 
-    # ------------------------------------------------------------
-    # SALIDA Y PUESTA DEL SOL
-    # ------------------------------------------------------------
-    sol_func = almanac.risings_and_settings(eph, eph['Sun'], observador)
+    # Sunrise/Sunset
+    sol_func = almanac.risings_and_settings(eph, eph["Sun"], observador)
     t_sol, e_sol = almanac.find_discrete(t0, t1, sol_func)
 
-    salida_sol = None
-    puesta_sol = None
-
-    for t, event in zip(t_sol, e_sol):
-        dt = t.utc_datetime().replace(tzinfo=pytz.utc).astimezone(user_tz)
-        if event == 1 and salida_sol is None:
+    salida_sol = puesta_sol = None
+    for t, e in zip(t_sol, e_sol):
+        dt = t.utc_datetime().astimezone(tz_fixed)
+        if e == 1 and salida_sol is None:
             salida_sol = dt.strftime("%Y-%m-%d %H:%M")
-        elif event == 0 and puesta_sol is None:
+        if e == 0 and puesta_sol is None:
             puesta_sol = dt.strftime("%Y-%m-%d %H:%M")
 
-    # ------------------------------------------------------------
-    # SALIDA Y PUESTA DE LA LUNA
-    # ------------------------------------------------------------
-    luna_func = almanac.risings_and_settings(eph, eph['Moon'], observador)
+    # Moonrise/Moonset
+    luna_func = almanac.risings_and_settings(eph, eph["Moon"], observador)
     t_luna, e_luna = almanac.find_discrete(t0, t1, luna_func)
 
-    salida_luna = None
-    puesta_luna = None
-
-    for t, event in zip(t_luna, e_luna):
-        dt = t.utc_datetime().replace(tzinfo=pytz.utc).astimezone(user_tz)
-        if event == 1 and salida_luna is None:
+    salida_luna = puesta_luna = None
+    for t, e in zip(t_luna, e_luna):
+        dt = t.utc_datetime().astimezone(tz_fixed)
+        if e == 1 and salida_luna is None:
             salida_luna = dt.strftime("%Y-%m-%d %H:%M")
-        elif event == 0 and puesta_luna is None:
+        if e == 0 and puesta_luna is None:
             puesta_luna = dt.strftime("%Y-%m-%d %H:%M")
 
-    # ------------------------------------------------------------
-    # FASE LUNAR (ángulo)
-    # ------------------------------------------------------------
-    fase_deg = almanac.moon_phase(eph, ts.utc(fecha_utc)).degrees
+    # Momento actual del día (para fase e iluminación)
+    t_actual = ts.from_datetime(fecha_utc)
 
+    # Fase lunar
+    fase_rad = almanac.moon_phase(eph, t_actual)
+    fase_deg = fase_rad.degrees
+
+    # Iluminación
+    iluminacion = almanac.fraction_illuminated(eph, "Moon", t_actual)
+
+    # Distancias: método correcto en Skyfield 1.53
+    topo = eph["earth"] + observador
+    ast = topo.at(t_actual)
+
+    dist_luna = ast.observe(eph["Moon"]).distance().km
+    dist_sol = ast.observe(eph["Sun"]).distance().km
+
+    # Clasificación de fase
     if fase_deg < 45:
         fase_nombre = "Luna nueva"
     elif fase_deg < 90:
@@ -119,28 +109,11 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
     else:
         fase_nombre = "Menguante"
 
-    # ------------------------------------------------------------
-    # ILUMINACIÓN
-    # ------------------------------------------------------------
-    iluminacion = almanac.fraction_illuminated(eph, 'moon', ts.utc(fecha_utc))
-
-    # ------------------------------------------------------------
-    # DISTANCIAS (forma totalmente compatible)
-    # ------------------------------------------------------------
-    t = ts.utc(fecha_utc)
-
-    # Esto siempre funciona, en cualquier Skyfield
-    dist_luna = (eph['Moon'] - observador).at(t).distance().km
-    dist_sol =  (eph['Sun']  - observador).at(t).distance().km
-
-    # ------------------------------------------------------------
-    # RESPUESTA
-    # ------------------------------------------------------------
     return {
         "fecha": fecha_local.strftime("%Y-%m-%d"),
         "sol": {
             "salida": salida_sol,
-            "puesta": puesta_sol,
+            "puesta": puesta_sol
         },
         "luna": {
             "salida": salida_luna,
@@ -149,17 +122,12 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
             "iluminacion": round(float(iluminacion), 4),
             "distancia_km": round(dist_luna, 2)
         },
-        "sol_distancia_km": round(dist_sol, 2)
+        "distancia_sol_km": round(dist_sol, 2)
     }
 
 
-# ============================================================
-# ENDPOINT /datos
-# ============================================================
-
 @app.get("/datos")
 def datos(lat: float, lon: float, tz: float, fecha: str = None):
-
     if fecha:
         try:
             fecha_dt = datetime.strptime(fecha, "%Y-%m-%d")
