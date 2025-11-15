@@ -50,7 +50,10 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
     ts = load.timescale()
     planets = load('de421.bsp')
 
-    observador = planets['earth'] + wgs84.latlon(lat, lon)
+    # Posición geocéntrica válida para almanac
+    obs = wgs84.latlon(lat, lon).to_geocentric()
+    observador = planets['earth'] + obs
+
 
     tz_fixed = pytz.FixedOffset(int(tz * 60))
     dia_local = fecha.replace(tzinfo=tz_fixed)
