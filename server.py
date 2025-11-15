@@ -4,12 +4,16 @@ from skyfield import almanac
 from datetime import datetime, timedelta
 import pytz
 
-app = FastAPI()
+# ============================================================
+# INICIALIZACIÓN
+# ============================================================
 
+app = FastAPI()
 ts = load.timescale()
 
+
 # ============================================================
-# ENDPOINT PRINCIPAL
+# ENDPOINT PRINCIPAL "/"
 # ============================================================
 @app.get("/")
 def root():
@@ -21,9 +25,7 @@ def root():
 # ============================================================
 @app.get("/ahora")
 def ahora(tz: float = Query(0, description="Huso horario en horas. Ej: -3 para Argentina")):
-
     t = ts.now()
-
     utc_now = datetime.utcnow().replace(tzinfo=pytz.utc)
 
     try:
@@ -41,28 +43,31 @@ def ahora(tz: float = Query(0, description="Huso horario en horas. Ej: -3 para A
 
 
 # ============================================================
-# FUNCIÓN BASE — CALCULAR DATOS
+# FUNCIÓN BASE — CALCULAR DATOS ASTRONÓMICOS
 # ============================================================
+
 def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
 
-    # EPHEMERIDES — Usar Loader como tu script viejo
+    # EPHEMERIDES (igual que tu script viejo)
     eph = load('de421.bsp')
 
-    # Timezones
+    # TZ local del usuario
     user_tz = pytz.FixedOffset(int(tz * 60))
+
+    # Fechas local y UTC
     fecha_local = fecha.replace(tzinfo=user_tz)
     fecha_utc = fecha_local.astimezone(pytz.utc)
 
-    # Observador (ESTO FUNCIONA EN SKYFIELD 1.45)
+    # Observador (forma compatible Skyfield 1.45)
     observador = wgs84.latlon(lat, lon)
 
     # Rango de un día
     t0 = ts.utc(fecha_utc)
     t1 = ts.utc((fecha_local + timedelta(days=1)).astimezone(pytz.utc))
 
-    # =========================
+    # ------------------------------------------------------------
     # SALIDA Y PUESTA DEL SOL
-    # =========================
+    # ------------------------------------------------------------
     sol_func = almanac.risings_and_settings(eph, eph['Sun'], observador)
     t_sol, e_sol = almanac.find_discrete(t0, t1, sol_func)
 
@@ -76,9 +81,9 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
         elif event == 0 and puesta_sol is None:
             puesta_sol = dt.strftime("%Y-%m-%d %H:%M")
 
-    # =========================
+    # ------------------------------------------------------------
     # SALIDA Y PUESTA DE LA LUNA
-    # =========================
+    # ------------------------------------------------------------
     luna_func = almanac.risings_and_settings(eph, eph['Moon'], observador)
     t_luna, e_luna = almanac.find_discrete(t0, t1, luna_func)
 
@@ -92,45 +97,50 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
         elif event == 0 and puesta_luna is None:
             puesta_luna = dt.strftime("%Y-%m-%d %H:%M")
 
-    # =========================
-    # FASE LUNAR – ÁNGULO
-    # =========================
-    fase_angulo = almanac.moon_phase(eph, ts.utc(fecha_utc)).degrees
+    # ------------------------------------------------------------
+    # FASE LUNAR (ángulo)
+    # ------------------------------------------------------------
+    fase_deg = almanac.moon_phase(eph, ts.utc(fecha_utc)).degrees
 
-    if fase_angulo < 45:
+    if fase_deg < 45:
         fase_nombre = "Luna nueva"
-    elif fase_angulo < 90:
+    elif fase_deg < 90:
         fase_nombre = "Creciente"
-    elif fase_angulo < 135:
+    elif fase_deg < 135:
         fase_nombre = "Cuarto creciente"
-    elif fase_angulo < 180:
+    elif fase_deg < 180:
         fase_nombre = "Gibosa creciente"
-    elif fase_angulo < 225:
+    elif fase_deg < 225:
         fase_nombre = "Luna llena"
-    elif fase_angulo < 270:
+    elif fase_deg < 270:
         fase_nombre = "Gibosa menguante"
-    elif fase_angulo < 315:
+    elif fase_deg < 315:
         fase_nombre = "Cuarto menguante"
     else:
         fase_nombre = "Menguante"
 
-    # =========================
+    # ------------------------------------------------------------
     # ILUMINACIÓN
-    # =========================
+    # ------------------------------------------------------------
     iluminacion = almanac.fraction_illuminated(eph, 'moon', ts.utc(fecha_utc))
 
-    # =========================
-    # DISTANCIAS
-    # =========================
-    obs_at = observador.at(ts.utc(fecha_utc))
-    dist_luna = obs_at.observe(eph['Moon']).distance().km
-    dist_sol = obs_at.observe(eph['Sun']).distance().km
+    # ------------------------------------------------------------
+    # DISTANCIAS (forma totalmente compatible)
+    # ------------------------------------------------------------
+    t = ts.utc(fecha_utc)
 
+    # Esto siempre funciona, en cualquier Skyfield
+    dist_luna = (eph['Moon'] - observador).at(t).distance().km
+    dist_sol =  (eph['Sun']  - observador).at(t).distance().km
+
+    # ------------------------------------------------------------
+    # RESPUESTA
+    # ------------------------------------------------------------
     return {
         "fecha": fecha_local.strftime("%Y-%m-%d"),
         "sol": {
             "salida": salida_sol,
-            "puesta": puesta_sol
+            "puesta": puesta_sol,
         },
         "luna": {
             "salida": salida_luna,
@@ -146,6 +156,7 @@ def calcular_datos(fecha: datetime, lat: float, lon: float, tz: float):
 # ============================================================
 # ENDPOINT /datos
 # ============================================================
+
 @app.get("/datos")
 def datos(lat: float, lon: float, tz: float, fecha: str = None):
 
