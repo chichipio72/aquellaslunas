@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-skyfield==1.45
-numpy==1.26.4
+skyfield==1.53
+numpy
 pytz
 
